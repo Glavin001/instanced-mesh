@@ -4,10 +4,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { InstancedMesh2 } from '../src/index.webgpu.js';
 import Stats from 'stats-gl';
 
-// NOTE: WebGPU buffer approach has a UBO limit of ~1000 instances
-// For larger counts, texture-based instancing is needed (not yet implemented)
-const count = 1000;
-const terrainSize = 100;
+// Texture-based instancing allows 200k+ instances in WebGPU now.
+const count = 200_000;
+const terrainSize = 1000;
 
 async function init(): Promise<void> {
   // Create WebGPU renderer

@@ -10,11 +10,11 @@
  * Reference: Three.js InstanceNode (node_modules/three/src/nodes/accessors/InstanceNode.js)
  */
 
-import { Fn, instanceIndex, int, ivec2, mat4, vec4, vec3, textureLoad, texture } from 'three/tsl';
+import { Fn, instanceIndex, int, ivec2, mat4, vec4, vec3, textureLoad } from 'three/tsl';
 import { buffer } from 'three/tsl';
 
 // Maximum instances for buffer-based approach (UBO limit is 64KB = 16 floats * 4 bytes * 1000 = 64KB)
-const MAX_UBO_INSTANCES = 1000;
+export const MAX_UBO_INSTANCES = 1000;
 
 /**
  * Gets instance color from a Float32Array buffer.
@@ -59,43 +59,37 @@ export const getMatrixFromBuffer = (matricesArray: Float32Array, count: number):
 
 /**
  * Gets per-instance color from a DataTexture using textureLoad.
- * 
- * DEPRECATED: Use getColorFromBuffer instead for better WebGPU compatibility.
- * 
+ * Acts as the fallback when UBO capacity is exceeded.
+ *
  * @param colorsTexture - DataTexture containing per-instance colors
  * @returns TSL node for the color at the current instance index
  */
 export const getColorTexture = (colorsTexture: any): any => {
-  // Create a proper texture node for textureLoad
-  const texNode = texture(colorsTexture);
   const size = int(colorsTexture.image.width);
   const j = int(instanceIndex).toVar();
   const x = int(j.mod(size)).toVar();
   const y = int(j.div(size)).toVar();
-  return textureLoad(texNode, ivec2(x, y));
+  return textureLoad(colorsTexture, ivec2(x, y));
 };
 
 /**
  * Gets per-instance transformation matrix from a DataTexture.
  * Each matrix uses 4 consecutive RGBA pixels (16 floats = 4 vec4s).
- * 
- * DEPRECATED: Use getMatrixFromBuffer instead for better WebGPU compatibility.
- * 
+ * This is the texture-based fallback that supports millions of instances.
+ *
  * @param matricesTexture - DataTexture containing per-instance matrices
  * @returns TSL node for the mat4 at the current instance index
  */
 export const getInstancedMatrix = (matricesTexture: any): any => {
-  // Create a proper texture node for textureLoad
-  const texNode = texture(matricesTexture);
   const size = int(matricesTexture.image.width);
   const j = int(int(instanceIndex).mul(int(4))).toVar();
   const x = int(j.mod(size)).toVar();
   const y = int(j.div(size)).toVar();
   
-  const v1 = textureLoad(texNode, ivec2(x, y)).toVar();
-  const v2 = textureLoad(texNode, ivec2(x.add(int(1)), y)).toVar();
-  const v3 = textureLoad(texNode, ivec2(x.add(int(2)), y)).toVar();
-  const v4 = textureLoad(texNode, ivec2(x.add(int(3)), y)).toVar();
+  const v1 = textureLoad(matricesTexture, ivec2(x, y)).toVar();
+  const v2 = textureLoad(matricesTexture, ivec2(x.add(int(1)), y)).toVar();
+  const v3 = textureLoad(matricesTexture, ivec2(x.add(int(2)), y)).toVar();
+  const v4 = textureLoad(matricesTexture, ivec2(x.add(int(3)), y)).toVar();
 
   return mat4(v1, v2, v3, v4);
 };
@@ -103,12 +97,11 @@ export const getInstancedMatrix = (matricesTexture: any): any => {
 /**
  * Gets per-instance bone transformation matrix from a DataTexture.
  * Returns a function that takes a bone index and returns the corresponding mat4.
- * 
+ *
  * @param boneTexture - DataTexture containing bone matrices
  * @returns TSL Fn node that takes bone index and returns mat4
  */
 export const getBoneMatrix = (boneTexture: any): any => {
-  const texNode = texture(boneTexture);
   const size = int(boneTexture.image.width);
   
   return Fn((i: any) => {
@@ -118,10 +111,10 @@ export const getBoneMatrix = (boneTexture: any): any => {
     const x = int(j.mod(size)).toVar();
     const y = int(j.div(size)).toVar();
     
-    const v1 = textureLoad(texNode, ivec2(x, y)).toVar();
-    const v2 = textureLoad(texNode, ivec2(x.add(int(1)), y)).toVar();
-    const v3 = textureLoad(texNode, ivec2(x.add(int(2)), y)).toVar();
-    const v4 = textureLoad(texNode, ivec2(x.add(int(3)), y)).toVar();
+    const v1 = textureLoad(boneTexture, ivec2(x, y)).toVar();
+    const v2 = textureLoad(boneTexture, ivec2(x.add(int(1)), y)).toVar();
+    const v3 = textureLoad(boneTexture, ivec2(x.add(int(2)), y)).toVar();
+    const v4 = textureLoad(boneTexture, ivec2(x.add(int(3)), y)).toVar();
 
     return mat4(v1, v2, v3, v4);
   });
@@ -137,10 +130,9 @@ export const getBoneMatrix = (boneTexture: any): any => {
  * @returns TSL node for the vec4 at the specified offset
  */
 export const getUniformTexel = (uniformsTexture: any, pixelsPerInstance: number, pixelOffset: number): any => {
-  const texNode = texture(uniformsTexture);
   const size = int(uniformsTexture.image.width);
   const j = int(int(instanceIndex).mul(int(pixelsPerInstance)).add(int(pixelOffset))).toVar();
   const x = int(j.mod(size)).toVar();
   const y = int(j.div(size)).toVar();
-  return textureLoad(texNode, ivec2(x, y));
+  return textureLoad(uniformsTexture, ivec2(x, y));
 };
