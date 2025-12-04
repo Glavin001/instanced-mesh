@@ -7,7 +7,7 @@
 import { BufferAttribute, BufferGeometry, Camera, DynamicDrawUsage, InstancedBufferAttribute, Material, Scene } from 'three';
 import { positionLocal, vec4 } from 'three/tsl';
 import { InstancedMesh2, InstanceIndexAttribute } from './InstancedMesh2.js';
-import { getMatrixFromBuffer, getColorFromBuffer } from '../shaders/tsl/nodes.js';
+import { getMatrixFromBuffer, getColorFromBuffer, getInstancedMatrix, getColorTexture, MAX_UBO_INSTANCES } from '../shaders/tsl/nodes.js';
 
 // Type definitions for WebGPU renderer and TSL
 interface WebGPURenderer {
@@ -40,16 +40,28 @@ function fixInstanceMatrixForWebGPU(mesh: InstancedMesh2): void {
   
   const instanceMatrix = (mesh as any).instanceMatrix;
   const matricesTexture = mesh.matricesTexture;
+  const parentMesh = mesh._parentLOD || mesh;
+  const instanceCount = parentMesh?.instancesCount ?? 0;
   
   // Check if we need to fix the buffer
   if (!instanceMatrix || !matricesTexture?.image?.data) return;
   
+  if (instanceCount > MAX_UBO_INSTANCES) {
+    const minimalData = new Float32Array(16);
+    minimalData.set([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+    (mesh as any).instanceMatrix = new InstancedBufferAttribute(minimalData, 16);
+    (mesh as any).instanceMatrix.setUsage(DynamicDrawUsage);
+    _fixedInstanceMatrix.add(mesh);
+    return;
+  }
+
   const currentSize = instanceMatrix.array?.length || 0;
   const matricesData = matricesTexture.image.data as Float32Array;
-  const requiredSize = matricesData.length;
+  const requiredSize = instanceCount * 16;
   
   if (currentSize < requiredSize) {
-    (mesh as any).instanceMatrix = new InstancedBufferAttribute(matricesData, 16);
+    const matricesArray = matricesData.subarray(0, requiredSize);
+    (mesh as any).instanceMatrix = new InstancedBufferAttribute(matricesArray, 16);
     (mesh as any).instanceMatrix.setUsage(DynamicDrawUsage);
     _fixedInstanceMatrix.add(mesh);
   }
@@ -234,60 +246,69 @@ function patchMaterialWebGPU(mesh: InstancedMesh2, material: Material): void {
   // Apply instanced matrix transformation via TSL
   // Use buffer-based approach (same as Three.js InstanceNode) for WebGPU compatibility
   try {
-    const matricesTexture = mesh.matricesTexture;
-    if (matricesTexture) {
-      // Validate texture is properly initialized
-      if (!matricesTexture.image || !matricesTexture.image.data) {
-        return;
-      }
+    const parentMesh = mesh._parentLOD || mesh;
+    const instanceCount = parentMesh.instancesCount;
 
+    // Skip patching if no instances yet - this prevents zero-size buffer errors
+    if (instanceCount === 0) {
+      return;
+    }
+
+    const matricesTexture = parentMesh.matricesTexture;
+    // Validate texture is properly initialized
+    if (!matricesTexture?.image || !matricesTexture.image.data) {
+      return;
+    }
+
+    let instancedMatrixNode: any = null;
+    let matricesArray: Float32Array | null = null;
+
+    if (instanceCount <= MAX_UBO_INSTANCES) {
       // IMPORTANT: Only use the actual needed portion of the array, not the full padded texture
       // The texture is padded to a square (e.g., 64x64), but we only need count*16 floats
-      // For LOD children, use the parent's instance count since they share the same matricesTexture
-      const parentMesh = mesh._parentLOD || mesh;
-      const instanceCount = parentMesh.instancesCount;
-      
-      // Skip patching if no instances yet - this prevents zero-size buffer errors
-      if (instanceCount === 0) {
-        return;
-      }
-      
       const neededFloats = instanceCount * 16;
       const fullArray = matricesTexture.image.data as Float32Array;
-      const matricesArray = fullArray.subarray(0, neededFloats);
+      matricesArray = fullArray.subarray(0, neededFloats);
+      instancedMatrixNode = getMatrixFromBuffer(matricesArray, instanceCount);
+    } else {
+      // Fall back to texture-based matrices for large counts (matches WebGL path)
+      instancedMatrixNode = getInstancedMatrix(matricesTexture);
+    }
 
-      // Use buffer-based approach (matches Three.js InstanceNode)
-      const instancedMatrixNode = getMatrixFromBuffer(matricesArray, instanceCount);
+    if (instancedMatrixNode) {
+      // Transform position by instance matrix
+      // positionLocal is vec3, we need to convert to vec4, multiply by mat4, then back to vec3
+      const basePosition = nodeMaterial.positionNode || positionLocal;
+      const position4 = vec4(basePosition, 1.0);
+      const transformedPosition = instancedMatrixNode.mul(position4);
+      nodeMaterial.positionNode = transformedPosition.xyz;
+      
+      // Mark material as needing recompilation
+      nodeMaterial.needsUpdate = true;
 
-      if (instancedMatrixNode) {
-        // Transform position by instance matrix
-        // positionLocal is vec3, we need to convert to vec4, multiply by mat4, then back to vec3
-        const basePosition = nodeMaterial.positionNode || positionLocal;
-        const position4 = vec4(basePosition, 1.0);
-        const transformedPosition = instancedMatrixNode.mul(position4);
-        nodeMaterial.positionNode = transformedPosition.xyz;
-
-        // Mark material as needing recompilation
-        nodeMaterial.needsUpdate = true;
-
-        // Store reference for the material
-        (nodeMaterial as any)._instancedMatricesArray = matricesArray;
-      }
+      // Store reference for the material
+      (nodeMaterial as any)._instancedMatricesArray = matricesArray;
     }
 
     // Apply instanced colors if available
-    if (mesh.colorsTexture && mesh.colorsTexture.image?.data) {
-      // Only use the actual needed portion, not the padded texture
-      // For LOD children, use the parent's instance count since they share the same colorsTexture
-      const parentMesh = mesh._parentLOD || mesh;
-      const instanceCount = parentMesh.instancesCount;
-      const neededFloats = instanceCount * 4; // RGBA per instance
-      const fullArray = mesh.colorsTexture.image.data as Float32Array;
-      const colorsArray = fullArray.subarray(0, neededFloats);
-      
-      const colorNode = getColorFromBuffer(colorsArray, instanceCount);
+    const colorsTexture = parentMesh.colorsTexture;
+    if (colorsTexture && colorsTexture.image?.data) {
+      let colorNode: any = null;
+      let colorsArray: Float32Array | null = null;
+
+      if (instanceCount <= MAX_UBO_INSTANCES) {
+        // Only use the actual needed portion, not the padded texture
+        const neededFloats = instanceCount * 4; // RGBA per instance
+        const fullArray = colorsTexture.image.data as Float32Array;
+        colorsArray = fullArray.subarray(0, neededFloats);
+        colorNode = getColorFromBuffer(colorsArray, instanceCount);
+      } else {
+        // Fall back to texture sampling for large counts
+        colorNode = getColorTexture(colorsTexture);
+      }
+
       if (colorNode) {
-        // Apply color from buffer to material
+        // Apply color from buffer/texture to material
         const originalColor = nodeMaterial.colorNode;
         if (originalColor) {
           nodeMaterial.colorNode = originalColor.mul(colorNode);

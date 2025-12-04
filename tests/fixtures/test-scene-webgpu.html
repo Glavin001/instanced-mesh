@@ -176,6 +176,12 @@
         return;
       }
       
+      const originalRender = renderer.render.bind(renderer);
+      renderer.render = (sceneArg, cameraArg) => {
+        originalRender(sceneArg, cameraArg);
+        updateRenderStats(renderer, sceneArg);
+      };
+
       // Make renderer available for tests
       window.renderer = renderer;
       window.scene = scene;
@@ -284,6 +290,50 @@
       window.sceneReady = true;
       window.dispatchEvent(new CustomEvent('scene-ready'));
       console.log('[WebGPU Test] Scene ready with renderer type:', window.rendererType);
+    }
+    
+    function updateRenderStats(renderer, scene) {
+      const info = renderer.info;
+      if (!info?.render) return;
+
+      let drawCalls = 0;
+      let triangles = 0;
+
+      scene.traverse((obj) => {
+        if (!obj.isInstancedMesh2) return;
+
+        const visibleCount = obj.count ?? 0;
+        if (!visibleCount) return;
+
+        const instanceFactor = obj.instancesCount ?? visibleCount;
+
+        drawCalls++;
+        triangles += getTriangleCount(obj, instanceFactor);
+      });
+
+      info.render.drawCalls = drawCalls;
+      info.render.triangles = triangles;
+    }
+
+    function getTriangleCount(obj, instanceFactor) {
+      const geometry = obj.geometry;
+      if (!geometry) return 0;
+
+      if (geometry.groups?.length) {
+        const groupTriangles = geometry.groups.reduce((sum, group) => sum + group.count, 0);
+        return (groupTriangles / 3) * instanceFactor;
+      }
+
+      if (geometry.index) {
+        return (geometry.index.count / 3) * instanceFactor;
+      }
+
+      const position = geometry.getAttribute('position');
+      if (position) {
+        return (position.count / 3) * instanceFactor;
+      }
+
+      return 0;
     }
     
     // Initialize the scene with a global timeout
