@@ -7,7 +7,7 @@
 import { BufferAttribute, BufferGeometry, Camera, DynamicDrawUsage, InstancedBufferAttribute, Material, Scene } from 'three';
 import { positionLocal, vec4 } from 'three/tsl';
 import { InstancedMesh2, InstanceIndexAttribute } from './InstancedMesh2.js';
-import { getMatrixFromBuffer, getColorFromBuffer } from '../shaders/tsl/nodes.js';
+import { getMatrixFromBuffer, getColorFromBuffer, getInstanceIndexNode } from '../shaders/tsl/nodes.js';
 
 // Type definitions for WebGPU renderer and TSL
 interface WebGPURenderer {
@@ -235,6 +235,10 @@ function patchMaterialWebGPU(mesh: InstancedMesh2, material: Material): void {
   // Use buffer-based approach (same as Three.js InstanceNode) for WebGPU compatibility
   try {
     const matricesTexture = mesh.matricesTexture;
+    const indexArray = mesh.instanceIndex?.array;
+    const indexCount = mesh.count && mesh.count > 0 ? mesh.count : (indexArray?.length ?? 0);
+    const instanceIndexNode = indexArray ? getInstanceIndexNode(indexArray, indexCount) : null;
+
     if (matricesTexture) {
       // Validate texture is properly initialized
       if (!matricesTexture.image || !matricesTexture.image.data) {
@@ -257,7 +261,7 @@ function patchMaterialWebGPU(mesh: InstancedMesh2, material: Material): void {
       const matricesArray = fullArray.subarray(0, neededFloats);
 
       // Use buffer-based approach (matches Three.js InstanceNode)
-      const instancedMatrixNode = getMatrixFromBuffer(matricesArray, instanceCount);
+      const instancedMatrixNode = getMatrixFromBuffer(matricesArray, instanceCount, instanceIndexNode);
 
       if (instancedMatrixNode) {
         // Transform position by instance matrix
@@ -285,7 +289,7 @@ function patchMaterialWebGPU(mesh: InstancedMesh2, material: Material): void {
       const fullArray = mesh.colorsTexture.image.data as Float32Array;
       const colorsArray = fullArray.subarray(0, neededFloats);
       
-      const colorNode = getColorFromBuffer(colorsArray, instanceCount);
+      const colorNode = getColorFromBuffer(colorsArray, instanceCount, instanceIndexNode);
       if (colorNode) {
         // Apply color from buffer to material
         const originalColor = nodeMaterial.colorNode;

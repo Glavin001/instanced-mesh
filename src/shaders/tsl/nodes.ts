@@ -24,10 +24,11 @@ const MAX_UBO_INSTANCES = 1000;
  * @param count - Number of instances
  * @returns TSL node representing the instance color
  */
-export const getColorFromBuffer = (colorsArray: Float32Array, count: number): any => {
+export const getColorFromBuffer = (colorsArray: Float32Array, count: number, indexNode?: any): any => {
+  const targetIndex = indexNode ?? instanceIndex;
   if (count <= MAX_UBO_INSTANCES) {
     // Use buffer node approach (more reliable for WebGPU)
-    return buffer(colorsArray, 'vec4', Math.max(count, 1)).element(instanceIndex);
+    return buffer(colorsArray, 'vec4', Math.max(count, 1)).element(targetIndex);
   }
   // For larger counts, would need texture-based fallback (not implemented yet)
   console.warn('Color buffer exceeds UBO limit, colors may not work correctly');
@@ -42,10 +43,11 @@ export const getColorFromBuffer = (colorsArray: Float32Array, count: number): an
  * @param count - Number of instances
  * @returns TSL node representing the instance matrix (mat4)
  */
-export const getMatrixFromBuffer = (matricesArray: Float32Array, count: number): any => {
+export const getMatrixFromBuffer = (matricesArray: Float32Array, count: number, indexNode?: any): any => {
+  const targetIndex = indexNode ?? instanceIndex;
   if (count <= MAX_UBO_INSTANCES) {
     // Use buffer node approach (same as Three.js InstanceNode)
-    return buffer(matricesArray, 'mat4', Math.max(count, 1)).element(instanceIndex);
+    return buffer(matricesArray, 'mat4', Math.max(count, 1)).element(targetIndex);
   }
   // For larger counts, would need texture-based or instanced attribute fallback
   console.warn('Matrix buffer exceeds UBO limit, instancing may not work correctly');
@@ -143,4 +145,26 @@ export const getUniformTexel = (uniformsTexture: any, pixelsPerInstance: number,
   const x = int(j.mod(size)).toVar();
   const y = int(j.div(size)).toVar();
   return textureLoad(texNode, ivec2(x, y));
+};
+
+/**
+ * Creates a node that resolves the logical instance index based on a buffer of indirect indices.
+ * Falls back to the built-in instanceIndex when buffers exceed WebGPU UBO limits.
+ *
+ * @param indicesArray - Uint32Array containing per-draw instance ids
+ * @param count - Number of entries from the array that should be exposed to the shader
+ * @returns TSL node representing the indirect instance index or null if unavailable
+ */
+export const getInstanceIndexNode = (indicesArray: Uint32Array, count?: number): any => {
+  if (!indicesArray || indicesArray.length === 0) return null;
+
+  const requestedCount = Math.max(count ?? indicesArray.length, 1);
+  if (requestedCount > MAX_UBO_INSTANCES) {
+    console.warn('Instance index buffer exceeds UBO limit, falling back to sequential indices');
+    return null;
+  }
+
+  const safeCount = Math.min(requestedCount, indicesArray.length);
+  const view = safeCount === indicesArray.length ? indicesArray : indicesArray.subarray(0, safeCount);
+  return buffer(view, 'uint', safeCount).element(instanceIndex);
 };
