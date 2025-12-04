@@ -13,10 +13,13 @@
  * Tests run against both WebGL and WebGPU renderers.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { BoxGeometry, MeshBasicMaterial, SphereGeometry } from 'three';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { BoxGeometry, MeshBasicMaterial, PerspectiveCamera, Scene, SphereGeometry } from 'three';
+import { MeshBasicNodeMaterial } from 'three/webgpu';
 import { describeForEachRenderer } from '../setup.js';
 import { InstancedMesh2 } from '../../src/core/InstancedMesh2.js';
+import * as tslNodes from '../../src/shaders/tsl/nodes.js';
+import '../../src/index.webgpu.js';
 
 describeForEachRenderer('Level of Detail (LOD)', (rendererType, createMesh) => {
   let mesh: InstancedMesh2;
@@ -133,6 +136,52 @@ describeForEachRenderer('Level of Detail (LOD)', (rendererType, createMesh) => {
       mesh.addLOD(lowPolyGeometry, material, 50);
 
       expect(mesh.children.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('WebGPU instance index mapping', () => {
+    it('should pass LOD instance indices to WebGPU node materials', () => {
+      if (rendererType !== 'webgpu') {
+        expect(true).toBe(true);
+        return;
+      }
+
+      const matricesSpy = vi.spyOn(tslNodes, 'getMatrixFromBuffer');
+
+      mesh.material = new MeshBasicNodeMaterial({ color: 0xff0000 });
+
+      mesh.addInstances(3, (obj, index) => {
+        obj.position.set(index * 10, 0, 0);
+      });
+
+      mesh.setFirstLODDistance(0);
+      const lodMaterial = new MeshBasicNodeMaterial({ color: 0x00ff00 });
+      mesh.addLOD(lowPolyGeometry, lodMaterial, 5);
+
+      const lodObject = mesh.LODinfo.render.levels[1].object;
+      lodObject.material = lodMaterial;
+
+      // Simulate frustum assignment to non-sequential instance ids
+      lodObject.autoUpdate = false;
+      lodObject.count = 2;
+      lodObject.instanceIndex.array[0] = 2;
+      lodObject.instanceIndex.array[1] = 0;
+
+      const renderer = mesh['_renderer'];
+      const camera = new PerspectiveCamera(60, 1, 0.1, 1000);
+      camera.position.set(0, 0, 10);
+      camera.lookAt(0, 0, 0);
+      camera.updateMatrixWorld();
+
+      const scene = new Scene();
+
+      lodObject.onBeforeRender(renderer as any, scene, camera, lodObject.geometry, lodObject.material, { materialIndex: 0 });
+
+      expect(matricesSpy).toHaveBeenCalled();
+      const lastCall = matricesSpy.mock.calls.at(-1);
+      expect(lastCall?.[2]).toBeDefined();
+
+      matricesSpy.mockRestore();
     });
   });
 
